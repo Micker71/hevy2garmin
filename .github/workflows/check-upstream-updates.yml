@@ -1,0 +1,70 @@
+name: Check upstream updates
+
+on:
+  schedule:
+    - cron: "17 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: check-upstream-updates
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out fork
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Compare fork with upstream and create issue when needed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          UPSTREAM="drkostas/hevy2garmin"
+          TITLE="[Upstream Update] hevy2garmin has new commits"
+
+          git fetch --no-tags https://github.com/${UPSTREAM}.git main:refs/remotes/upstream/main
+          BEHIND=$(git rev-list --count HEAD..refs/remotes/upstream/main)
+          echo "Upstream commits missing from fork: $BEHIND"
+
+          if [ "$BEHIND" -eq 0 ]; then
+            echo "Fork is up to date with upstream main."
+            exit 0
+          fi
+
+          EXISTING=$(gh issue list --repo "$GH_REPO" --state open --limit 100 \
+            --json number,title --jq ".[] | select(.title == \"$TITLE\") | .number" | head -n 1)
+
+          if [ -n "$EXISTING" ]; then
+            echo "Existing update issue: #$EXISTING"
+            exit 0
+          fi
+
+          COMMITS=$(git log --format='%h %s' --max-count=15 HEAD..refs/remotes/upstream/main)
+          {
+            echo "There are **$BEHIND upstream commit(s)** not yet in this fork."
+            echo
+            echo "**Upstream:** https://github.com/$UPSTREAM"
+            echo "**Fork:** https://github.com/$GH_REPO"
+            echo
+            echo "Recent upstream commits:"
+            echo '~~~'
+            printf '%s\n' "$COMMITS"
+            echo '~~~'
+            echo
+            echo "Review changes before using GitHub's **Sync fork** / **Update branch**."
+            echo "No code has been merged or deployed by this check."
+          } > /tmp/upstream-update-issue.md
+
+          gh issue create --repo "$GH_REPO" --title "$TITLE" \
+            --body-file /tmp/upstream-update-issue.md
