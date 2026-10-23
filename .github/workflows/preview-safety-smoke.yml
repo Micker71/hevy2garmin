@@ -1,0 +1,44 @@
+name: Preview safety smoke check
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - review/upstream-2026-10-22
+    paths:
+      - ".github/workflows/preview-safety-smoke.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  preview-safety:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Confirm preview rejects cron sync in demo mode
+        env:
+          PREVIEW_URL: https://hevy2garmin-git-review-upstream-2026-10-22-micker71.vercel.app
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # GET only, with no credentials. DEMO_MODE=true must reject before
+          # any database, GitHub, Hevy or Garmin actions can be attempted.
+          status=$(curl -sS --max-time 20 -o response.json -w '%{http_code}' \
+            "${PREVIEW_URL}/api/cron/sync")
+
+          if [ "$status" != "403" ]; then
+            echo "::error::Preview cron guard not verified (HTTP $status; expected 403)."
+            echo "A 401 or redirect may mean Vercel Deployment Protection is enabled."
+            exit 1
+          fi
+
+          if ! python3 -c 'import json; data=json.load(open("response.json")); assert data.get("error") == "Read-only in demo mode", "unexpected 403 source"'; then
+            echo "::error::HTTP 403 did not match the application's demo-mode guard."
+            echo "Do not treat a Vercel access-control 403 as a successful demo check."
+            exit 1
+          fi
+
+          echo "PASS: Preview rejected GET /api/cron/sync with the application demo-mode 403."
+          echo "Note: this does not establish which Neon branch the deployment uses."
