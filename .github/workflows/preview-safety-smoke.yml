@@ -1,4 +1,4 @@
-name: Preview safety smoke check
+name: Preview demo safety (isolated)
 
 on:
   workflow_dispatch:
@@ -7,38 +7,75 @@ on:
       - review/upstream-2026-10-22
     paths:
       - ".github/workflows/preview-safety-smoke.yml"
+      - "web/app/api/cron/sync/route.ts"
+      - "web/lib/demo.ts"
 
 permissions:
   contents: read
 
 jobs:
-  preview-safety:
+  local-demo-guard:
+    name: Assert read-only cron guard (no external credentials)
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    env:
+      DEMO_MODE: "true"
+      DATABASE_URL: "postgres://ci:ci@127.0.0.1:5432/ci"
+      NEXT_TELEMETRY_DISABLED: "1"
+
     steps:
-      - name: Confirm preview rejects cron sync in demo mode
-        env:
-          PREVIEW_URL: https://hevy2garmin-git-review-upstream-2026-10-22-micker71.vercel.app
+      - name: Check out review branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Build isolated web app
+        run: npm run build
+
+      - name: Check cron GET is denied in demo mode
         shell: bash
         run: |
           set -euo pipefail
 
-          # GET only, with no credentials. DEMO_MODE=true must reject before
-          # any database, GitHub, Hevy or Garmin actions can be attempted.
-          status=$(curl -sS --max-time 20 -o response.json -w '%{http_code}' \
-            "${PREVIEW_URL}/api/cron/sync")
+          # Start local app only. Dummy DB is deliberately unreachable and no
+          # GitHub/Garmin/Hevy credentials are provided.
+          npx next start --port 8099 > /tmp/h2g-preview-guard.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
 
+          ready=0
+          for i in $(seq 1 30); do
+            if curl -fsS --max-time 2 http://127.0.0.1:8099/api/version >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "::error::Local web server did not start."
+            tail -n 40 /tmp/h2g-preview-guard.log
+            exit 1
+          fi
+
+          status=$(curl -sS --max-time 10 -o /tmp/h2g-guard.json -w '%{http_code}' \
+            http://127.0.0.1:8099/api/cron/sync)
           if [ "$status" != "403" ]; then
-            echo "::error::Preview cron guard not verified (HTTP $status; expected 403)."
-            echo "A 401 or redirect may mean Vercel Deployment Protection is enabled."
+            echo "::error::Local demo cron guard returned HTTP $status (expected 403)."
             exit 1
           fi
-
-          if ! python3 -c 'import json; data=json.load(open("response.json")); assert data.get("error") == "Read-only in demo mode", "unexpected 403 source"'; then
-            echo "::error::HTTP 403 did not match the application's demo-mode guard."
-            echo "Do not treat a Vercel access-control 403 as a successful demo check."
-            exit 1
-          fi
-
-          echo "PASS: Preview rejected GET /api/cron/sync with the application demo-mode 403."
-          echo "Note: this does not establish which Neon branch the deployment uses."
+          python3 -c 'import json; d=json.load(open("/tmp/h2g-guard.json")); assert d.get("error") == "Read-only in demo mode"'
+          echo "PASS: local GET /api/cron/sync returned demo-mode HTTP 403."
+          echo "This checks app code, not live Vercel Preview configuration or Neon routing."
