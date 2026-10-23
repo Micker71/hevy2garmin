@@ -23,7 +23,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      - name: Compare fork with upstream and create issue when needed
+      - name: Compare fork and publish Danish update summary
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -32,39 +32,26 @@ jobs:
           set -euo pipefail
           UPSTREAM="drkostas/hevy2garmin"
           TITLE="[Upstream Update] hevy2garmin has new commits"
-
           git fetch --no-tags https://github.com/${UPSTREAM}.git main:refs/remotes/upstream/main
           BEHIND=$(git rev-list --count HEAD..refs/remotes/upstream/main)
           echo "Upstream commits missing from fork: $BEHIND"
 
-          if [ "$BEHIND" -eq 0 ]; then
-            echo "Fork is up to date with upstream main."
-            exit 0
-          fi
-
           EXISTING=$(gh issue list --repo "$GH_REPO" --state open --limit 100 \
             --json number,title --jq ".[] | select(.title == \"$TITLE\") | .number" | head -n 1)
 
-          if [ -n "$EXISTING" ]; then
-            echo "Existing update issue: #$EXISTING"
+          if [ "$BEHIND" -eq 0 ]; then
+            echo "Fork is up to date; no issue created or modified."
             exit 0
           fi
 
-          COMMITS=$(git log --format='%h %s' --max-count=15 HEAD..refs/remotes/upstream/main)
-          {
-            echo "There are **$BEHIND upstream commit(s)** not yet in this fork."
-            echo
-            echo "**Upstream:** https://github.com/$UPSTREAM"
-            echo "**Fork:** https://github.com/$GH_REPO"
-            echo
-            echo "Recent upstream commits:"
-            echo '~~~'
-            printf '%s\n' "$COMMITS"
-            echo '~~~'
-            echo
-            echo "Review changes before using GitHub's **Sync fork** / **Update branch**."
-            echo "No code has been merged or deployed by this check."
-          } > /tmp/upstream-update-issue.md
+          python3 .github/scripts/upstream_summary_da.py HEAD refs/remotes/upstream/main
 
-          gh issue create --repo "$GH_REPO" --title "$TITLE" \
-            --body-file /tmp/upstream-update-issue.md
+          if [ -n "$EXISTING" ]; then
+            echo "Refreshing existing update issue #$EXISTING"
+            gh issue edit "$EXISTING" --repo "$GH_REPO" \
+              --body-file /tmp/upstream-update-issue.md
+          else
+            echo "Creating update issue"
+            gh issue create --repo "$GH_REPO" --title "$TITLE" \
+              --body-file /tmp/upstream-update-issue.md
+          fi
