@@ -393,6 +393,8 @@ The paths inside the container are unchanged, so nothing needs moving.
 
 ### Vercel (fork-based deploy)
 
+The dashboard shows a banner when the original repo has changes your version doesn't have yet (set `H2G_UPDATE_CHECK=off` to turn it off). Its **Update now** button does what **Sync fork** does below, and needs the GitHub token saved in Settings.
+
 Your Vercel project is linked to your GitHub fork. To get the latest version:
 
 1. Go to your fork on GitHub (e.g. `github.com/your-username/hevy2garmin`)

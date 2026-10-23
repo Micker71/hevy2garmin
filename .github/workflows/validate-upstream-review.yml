@@ -1,0 +1,58 @@
+name: Validate upstream upgrade (isolated)
+
+on:
+  push:
+    branches:
+      - review/upstream-2026-10-22
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  upstream-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out review branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Merge upstream in runner only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.email "ci@example.invalid"
+          git config user.name "CI Review"
+          git fetch --no-tags https://github.com/drkostas/hevy2garmin.git main
+          git merge --no-commit --no-ff FETCH_HEAD
+          echo "Upstream merged in temporary CI workspace only; no commits pushed."
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install locked web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Typecheck web
+        working-directory: web
+        run: npx tsc --noEmit
+
+      - name: Test web
+        working-directory: web
+        run: npm test
+
+      - name: Build web without production services
+        working-directory: web
+        env:
+          VERCEL: "1"
+          DEMO_MODE: "true"
+          DATABASE_URL: "postgres://ci:ci@localhost:5432/ci"
+        run: npm run build

@@ -9,6 +9,7 @@
  */
 import { describe, it, expect } from "vitest";
 import {
+  applyExistingTiming,
   buildExerciseSetsPayload,
   categoryToString,
   isSubcategoryRejection,
@@ -269,5 +270,78 @@ describe("set timing comes from the user's settings", () => {
       { workingSetS: 5 },
     );
     expect(Math.round(p.exerciseSets[0].duration)).toBe(90);
+  });
+});
+
+// A watch's own exerciseSets read-back: a REST between each ACTIVE set, with
+// deliberately distinct durations so a test can tell the watch's timing from the
+// synthesized one that makes every set the same length (#748).
+function watchRecording(activeDurations: number[], activityId = 42): Record<string, unknown> {
+  const sets: Record<string, unknown>[] = [];
+  let msg = 0;
+  activeDurations.forEach((dur, i) => {
+    sets.push({
+      setType: "ACTIVE",
+      duration: dur,
+      startTime: `2026-09-15T10:0${i}:00.0`,
+      messageIndex: msg++,
+      wktStepIndex: 0,
+      exercises: [{ category: "UNKNOWN", name: null, probability: 0 }],
+    });
+    if (i < activeDurations.length - 1) {
+      sets.push({
+        setType: "REST",
+        duration: 50 + i,
+        startTime: `2026-09-15T10:0${i}:40.0`,
+        messageIndex: msg++,
+        exercises: [],
+      });
+    }
+  });
+  return { activityId, exerciseSets: sets };
+}
+
+describe("applyExistingTiming", () => {
+  // BENCH has 2 sets; this exercise list yields 3 ACTIVE sets total.
+  const WORKOUT = { exercises: [BENCH, { title: "Squat (Barbell)", sets: [{ reps: 5, weight_kg: 100 }] }] } as never;
+  const synth = () => buildExerciseSetsPayload(WORKOUT, 42, START, 600);
+
+  it("keeps the watch's duration and startTime on every ACTIVE set", () => {
+    const durations = [22, 31, 29];
+    const existing = watchRecording(durations);
+    const out = applyExistingTiming(synth(), existing);
+    expect(out).not.toBeNull();
+    const active = out!.exerciseSets.filter((s) => s.setType === "ACTIVE");
+    expect(active.map((s) => s.duration)).toEqual(durations);
+    expect(active.map((s) => s.startTime)).toEqual(
+      (existing.exerciseSets as Record<string, unknown>[])
+        .filter((s) => s.setType === "ACTIVE")
+        .map((s) => s.startTime),
+    );
+  });
+
+  it("overlays Hevy's identity, reps and weight, grouped by Hevy exercise", () => {
+    const out = applyExistingTiming(synth(), watchRecording([22, 31, 29]));
+    const active = out!.exerciseSets.filter((s) => s.setType === "ACTIVE");
+    expect(active[0].exercises[0].category).toBe("BENCH_PRESS");
+    expect(active.map((s) => s.repetitionCount)).toEqual([10, 8, 5]);
+    expect(active.map((s) => s.wktStepIndex)).toEqual([0, 0, 1]); // 2 bench, then squat
+  });
+
+  it("keeps the watch's REST sets and their real durations", () => {
+    const existing = watchRecording([22, 31, 29]);
+    const out = applyExistingTiming(synth(), existing)!;
+    expect(out.exerciseSets.length).toBe((existing.exerciseSets as unknown[]).length);
+    const rest = out.exerciseSets.filter((s) => s.setType === "REST");
+    expect(rest.map((s) => s.duration)).toEqual([50, 51]);
+  });
+
+  it("returns null when the ACTIVE-set counts differ", () => {
+    expect(applyExistingTiming(synth(), watchRecording([22, 31]))).toBeNull();
+  });
+
+  it("returns null when there are no existing sets", () => {
+    expect(applyExistingTiming(synth(), { exerciseSets: [] })).toBeNull();
+    expect(applyExistingTiming(synth(), null)).toBeNull();
   });
 });

@@ -149,6 +149,42 @@ describe("mergeIntoWatchActivity", () => {
     expect(r.strategy).toBe("merge");
     expect(g.putExerciseSets).toHaveBeenCalled();
   });
+
+  // The watch recorded two ACTIVE sets with its own timing; WORKOUT also has two.
+  const WATCH_SETS = {
+    exerciseSets: [
+      { setType: "ACTIVE", duration: 22, startTime: "2026-09-15T10:02:00.0", messageIndex: 0, wktStepIndex: 0, exercises: [{ category: "UNKNOWN", name: null, probability: 0 }] },
+      { setType: "REST", duration: 55, startTime: "2026-09-15T10:02:40.0", messageIndex: 1, exercises: [] },
+      { setType: "ACTIVE", duration: 31, startTime: "2026-09-15T10:03:40.0", messageIndex: 2, wktStepIndex: 0, exercises: [{ category: "UNKNOWN", name: null, probability: 0 }] },
+    ],
+  };
+
+  it("keeps the watch's own set timing by default (#748)", async () => {
+    const g = gw({ exerciseSets: vi.fn(async () => WATCH_SETS) as never });
+    const r = await mergeIntoWatchActivity(g, WORKOUT, { strategy: "merge", now: NOW });
+    expect(r.merged).toBe(true);
+    const [, payload] = (g.putExerciseSets as ReturnType<typeof vi.fn>).mock.calls[0];
+    const active = (payload as { exerciseSets: Array<Record<string, unknown>> }).exerciseSets.filter(
+      (s) => s.setType === "ACTIVE",
+    );
+    expect(active.map((s) => s.duration)).toEqual([22, 31]); // the watch's, not synthesized
+    expect((active[0].exercises as Array<Record<string, unknown>>)[0].category).toBe("BENCH_PRESS");
+  });
+
+  it("uses the synthesized timing when preserveWatchTiming is off", async () => {
+    const g = gw({ exerciseSets: vi.fn(async () => WATCH_SETS) as never });
+    const r = await mergeIntoWatchActivity(g, WORKOUT, {
+      strategy: "merge",
+      preserveWatchTiming: false,
+      now: NOW,
+    });
+    expect(r.merged).toBe(true);
+    const [, payload] = (g.putExerciseSets as ReturnType<typeof vi.fn>).mock.calls[0];
+    const active = (payload as { exerciseSets: Array<Record<string, unknown>> }).exerciseSets.filter(
+      (s) => s.setType === "ACTIVE",
+    );
+    expect(active.map((s) => s.duration)).not.toEqual([22, 31]);
+  });
 });
 
 describe("helpers", () => {

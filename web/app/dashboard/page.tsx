@@ -9,6 +9,7 @@ import { serverSyncSchedule } from "@/lib/server-schedule";
 import { PipelineDiagram } from "@/components/pipeline-diagram";
 import { HEVY_TO_GARMIN } from "hevy2garmin";
 import { withBasePath } from "@/lib/base-path";
+import { UpdateBanner } from "@/components/update-banner";
 
 // Queries the live hevy2garmin Postgres per request — never at build time.
 export const dynamic = "force-dynamic";
@@ -232,6 +233,8 @@ export default async function DashboardPage() {
           Your Hevy workouts flowing into Garmin Connect.
         </p>
       </header>
+
+      <UpdateBanner />
 
       {!data.dbConfigured && (
         <div className="mb-6 rounded-lg border border-warm/40 bg-warm/10 p-4 text-sm text-warm">
