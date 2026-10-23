@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { demoMode } from "@/lib/demo";
 import { syncOneWorkout, type SyncOneResult } from "@/lib/sync-one";
 import { repeatsEarlierRun } from "@/lib/sync-progress";
 import { postgresSyncStore } from "@/lib/sync-store";
@@ -25,6 +26,10 @@ const CAP = 50;
 
 
 export async function GET(request: Request) {
+  // Preview demo deployments must never dispatch a real Garmin sync.
+  if (demoMode()) {
+    return NextResponse.json({ ok: false, error: "Read-only in demo mode" }, { status: 403 });
+  }
   const secret = process.env.CRON_SECRET;
   const auth = request.headers.get("authorization") ?? "";
   const m = auth.match(/^Bearer\s+(.+)$/i);
