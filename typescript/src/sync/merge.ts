@@ -24,7 +24,12 @@ import {
   type MergeMatchOptions,
   type TimedWorkout,
 } from "../merge-match";
-import { buildExerciseSetsPayload, pushWithNameFallback, type SetTiming } from "../exercise-sets";
+import {
+  applyExistingTiming,
+  buildExerciseSetsPayload,
+  pushWithNameFallback,
+  type SetTiming,
+} from "../exercise-sets";
 import type { GarminGateway } from "./gateway";
 
 export type WatchStrategy = "merge" | "replace" | "describe";
@@ -59,6 +64,12 @@ export interface MergeOptions extends MergeMatchOptions {
    * settings, so a merged workout is laid out the way an uploaded one is.
    */
   timing?: Partial<SetTiming>;
+  /**
+   * On a watch activity, keep the watch's own per-set execution and rest timing
+   * and write only Hevy's names, reps and weights (#748). Default true. Set
+   * false to sync the synthesized timing too, the pre-#748 behavior.
+   */
+  preserveWatchTiming?: boolean;
 }
 
 export interface MergeOutcome {
@@ -243,6 +254,7 @@ export async function pushSetsIntoActivity(
   deps: MergeDeps = {},
 ): Promise<MergeOutcome> {
   const strategy = options.strategy ?? DEFAULT_WATCH_STRATEGY;
+  const preserveWatchTiming = options.preserveWatchTiming ?? true;
   const store = deps.store;
   const isWatch = isWatchRecorded(act);
 
@@ -257,7 +269,7 @@ export async function pushSetsIntoActivity(
     };
   }
 
-  const payload = buildExerciseSetsPayload(
+  let payload = buildExerciseSetsPayload(
     workout as { exercises?: never[] },
     act.activityId,
     startTime,
@@ -285,6 +297,16 @@ export async function pushSetsIntoActivity(
   // `merge_backup_<id>` so either stack can read the other's (#598).
   if (backup && store?.saveMergeBackup) {
     await store.saveMergeBackup(act.activityId, backup).catch(() => {});
+  }
+
+  // Keep the watch's own per-set execution and rest timing when we can (#748).
+  // Only for a watch recording: a DEVELOPMENT activity's existing sets are a
+  // previous hevy2garmin upload, not real device timing. applyExistingTiming
+  // returns null when the watch and Hevy disagree on how many sets there were,
+  // so the synthesized timing stands rather than a wrong mapping.
+  if (preserveWatchTiming && isWatch) {
+    const preserved = applyExistingTiming(payload, backup);
+    if (preserved) payload = preserved;
   }
 
   try {

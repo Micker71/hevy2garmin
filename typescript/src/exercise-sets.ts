@@ -208,6 +208,69 @@ export function buildExerciseSetsPayload(
   return { activityId, exerciseSets };
 }
 
+/**
+ * Keep the watch's own per-set execution and rest timing, writing only Hevy's
+ * names, reps and weights onto it (#748).
+ *
+ * `buildExerciseSetsPayload` invents a uniform duration for every set, because
+ * Hevy's API sends none, and scales them to the activity, so each set ends the
+ * same length (the 33 seconds the reporter saw). When the workout was recorded
+ * on both the watch and Hevy, the watch's timing is the real one, so this takes
+ * the watch's whole set list unchanged and overlays Hevy's identity onto the
+ * ACTIVE sets, matched by ACTIVE-set position.
+ *
+ * Returns null when the two have a different number of ACTIVE sets: there is no
+ * sound 1:1 mapping then, so the caller keeps the synthesized timing instead of
+ * guessing. `existing` is the activity's current sets, as `gateway.exerciseSets`
+ * returns them.
+ */
+export function applyExistingTiming(
+  payload: ExerciseSetsPayload,
+  existing: Record<string, unknown> | null | undefined,
+): ExerciseSetsPayload | null {
+  const existingSets =
+    (existing?.exerciseSets as Array<Record<string, unknown>> | undefined) ?? [];
+  if (!existingSets.length) return null;
+
+  const synthActive = payload.exerciseSets.filter((s) => s.setType === "ACTIVE");
+  const watchActive = existingSets.filter((s) => s.setType === "ACTIVE");
+  if (!watchActive.length || watchActive.length !== synthActive.length) return null;
+
+  const out: ExerciseSet[] = [];
+  let ai = 0;
+  for (const es of existingSets) {
+    if (es.setType === "ACTIVE") {
+      const h = synthActive[ai];
+      ai += 1;
+      out.push({
+        // Identity, reps and weight from Hevy; the wktStepIndex too, so the sets
+        // group under their Hevy exercise rather than the watch's own grouping.
+        exercises: h.exercises,
+        repetitionCount: h.repetitionCount ?? 0,
+        weight: h.weight ?? 0,
+        wktStepIndex: h.wktStepIndex,
+        // Timing exactly as the watch recorded it.
+        duration: Number(es.duration),
+        startTime: String(es.startTime),
+        setType: "ACTIVE",
+        messageIndex: Number(es.messageIndex),
+      });
+    } else {
+      // A REST (or any non-ACTIVE) set is the watch's own, kept so its real rest
+      // duration survives.
+      out.push({
+        exercises: (es.exercises as ExercisePayloadEntry[]) ?? [],
+        duration: Number(es.duration),
+        setType: "REST",
+        startTime: String(es.startTime),
+        wktStepIndex: Number(es.wktStepIndex ?? 0),
+        messageIndex: Number(es.messageIndex),
+      });
+    }
+  }
+  return { activityId: payload.activityId, exerciseSets: out };
+}
+
 /** True when Garmin refused an exercise's (category, subcategory) pair. */
 export function isSubcategoryRejection(err: unknown): boolean {
   const msg = String((err as Error)?.message ?? err).toLowerCase();

@@ -56,6 +56,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     #   "describe": keep the watch activity, only list exercises in its
     #       description (no structured sets).
     "merge_watch_strategy": "merge",
+    # When a workout was recorded on a watch, keep the watch's own per-set
+    # execution and rest timing instead of the durations hevy2garmin invents for
+    # each set (#748). Hevy's API sends no per-set time, so the synthesized
+    # timing makes every set the same length; the watch recorded the real one.
+    # True (default): preserve the watch's timing, write only names/reps/weights.
+    # False: sync Hevy's synthesized timing too (the pre-#748 behavior).
+    "merge_preserve_watch_timing": True,
 }
 
 

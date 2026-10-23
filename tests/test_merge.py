@@ -13,6 +13,7 @@ from hevy2garmin.merge import (
     _strip_exercise_names,
     attempt_merge,
     build_exercise_sets_payload,
+    build_preserved_payload,
     reset_circuit_breaker,
 )
 
@@ -337,6 +338,117 @@ class TestBuildPayload:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Preserve the watch's own set timing (#748)
+# ---------------------------------------------------------------------------
+
+
+def _watch_recording(active_durations: list[float], activity_id: int = 12345) -> dict:
+    """A watch's own exerciseSets read-back: one REST between each ACTIVE set.
+
+    The ACTIVE sets carry no real exercise identity (a watch records them as
+    "Unknown"), only the timing we want to keep. The durations are deliberately
+    all different, so a test can tell the watch's timing from the synthesized
+    one, which makes every set the same length.
+    """
+    sets: list[dict] = []
+    msg = 0
+    offset = 0.0
+    for i, dur in enumerate(active_durations):
+        sets.append(
+            {
+                "setType": "ACTIVE",
+                "duration": dur,
+                "startTime": f"2026-03-15T18:{2 + i:02d}:00.0",
+                "messageIndex": msg,
+                "wktStepIndex": 0,  # the watch's own grouping, which we overwrite
+                "exercises": [{"category": "UNKNOWN", "name": None, "probability": 0}],
+            }
+        )
+        msg += 1
+        offset += dur
+        if i < len(active_durations) - 1:
+            sets.append(
+                {
+                    "setType": "REST",
+                    "duration": 50.0 + i,  # a distinct, real rest time
+                    "startTime": f"2026-03-15T18:{2 + i:02d}:40.0",
+                    "messageIndex": msg,
+                    "exercises": [],
+                }
+            )
+            msg += 1
+    return {"activityId": activity_id, "exerciseSets": sets}
+
+
+class TestPreservedPayload:
+    def _synth(self) -> dict:
+        return build_exercise_sets_payload(HEVY_WORKOUT, 12345, "2026-03-15 18:02:00", 43 * 60)
+
+    def test_keeps_watch_timing_on_active_sets(self):
+        """Each ACTIVE set keeps the watch's duration and startTime, not the
+        synthesized uniform one."""
+        durations = [22.0, 31.0, 29.0, 35.0, 27.0]  # HEVY_WORKOUT has 5 active sets
+        existing = _watch_recording(durations)
+        out = build_preserved_payload(self._synth(), existing)
+        assert out is not None
+        active = [s for s in out["exerciseSets"] if s["setType"] == "ACTIVE"]
+        assert [s["duration"] for s in active] == durations
+        assert [s["startTime"] for s in active] == [
+            s["startTime"] for s in existing["exerciseSets"] if s["setType"] == "ACTIVE"
+        ]
+
+    def test_overlays_hevy_identity_reps_and_weight(self):
+        """Names, reps and weights come from Hevy, not from the watch's blank sets."""
+        synth = self._synth()
+        out = build_preserved_payload(synth, _watch_recording([22.0, 31.0, 29.0, 35.0, 27.0]))
+        assert out is not None
+        synth_active = [s for s in synth["exerciseSets"] if s["setType"] == "ACTIVE"]
+        out_active = [s for s in out["exerciseSets"] if s["setType"] == "ACTIVE"]
+        assert [s["exercises"] for s in out_active] == [s["exercises"] for s in synth_active]
+        assert [s["repetitionCount"] for s in out_active] == [
+            s["repetitionCount"] for s in synth_active
+        ]
+        assert [s["weight"] for s in out_active] == [s["weight"] for s in synth_active]
+        # The identity really is Hevy's (a real category), not the watch's UNKNOWN.
+        assert out_active[0]["exercises"][0]["category"] == "BENCH_PRESS"
+
+    def test_wkt_step_index_follows_hevy_grouping(self):
+        """Sets group under the Hevy exercise they belong to (3 then 2), not the
+        watch's single group."""
+        out = build_preserved_payload(
+            self._synth(), _watch_recording([22.0, 31.0, 29.0, 35.0, 27.0])
+        )
+        assert out is not None
+        active = [s for s in out["exerciseSets"] if s["setType"] == "ACTIVE"]
+        assert [s["wktStepIndex"] for s in active] == [0, 0, 0, 1, 1]
+
+    def test_rest_sets_preserved_untouched(self):
+        """The watch's REST sets keep their own real rest durations."""
+        existing = _watch_recording([22.0, 31.0, 29.0, 35.0, 27.0])
+        out = build_preserved_payload(self._synth(), existing)
+        assert out is not None
+        out_rest = [s for s in out["exerciseSets"] if s["setType"] == "REST"]
+        in_rest = [s for s in existing["exerciseSets"] if s["setType"] == "REST"]
+        assert [s["duration"] for s in out_rest] == [s["duration"] for s in in_rest]
+        assert len(out["exerciseSets"]) == len(existing["exerciseSets"])
+
+    def test_mismatched_set_count_returns_none(self):
+        """No sound 1:1 mapping when the counts differ, so fall back to synthesized."""
+        assert build_preserved_payload(self._synth(), _watch_recording([22.0, 31.0, 29.0])) is None
+
+    def test_empty_existing_returns_none(self):
+        assert build_preserved_payload(self._synth(), {"exerciseSets": []}) is None
+        assert build_preserved_payload(self._synth(), {}) is None
+
+    def test_does_not_mutate_the_backup(self):
+        """Building the payload must not touch the backed-up watch sets."""
+        existing = _watch_recording([22.0, 31.0, 29.0, 35.0, 27.0])
+        before = [dict(s) for s in existing["exerciseSets"]]
+        build_preserved_payload(self._synth(), existing)
+        assert existing["exerciseSets"] == before
+
+
 class TestCategoryConversion:
     def test_known_category(self):
         assert _category_to_string(0) == "BENCH_PRESS"
@@ -550,6 +662,66 @@ def test_watch_merge_strategy_pushes_and_keeps(
     assert result.delete_after_upload is None
     mock_push.assert_called_once()  # pushed the sets into the watch activity
     mock_rename.assert_called_once()  # renamed + described it in place
+
+
+@patch("hevy2garmin.merge.time.sleep")
+@patch("hevy2garmin.merge.find_matching_garmin_activity")
+@patch("hevy2garmin.merge.get_activity_exercise_sets")
+@patch("hevy2garmin.merge.push_exercise_sets")
+@patch("hevy2garmin.merge.rename_activity")
+@patch("hevy2garmin.merge.set_description")
+@patch("hevy2garmin.merge.generate_description")
+def test_watch_merge_preserves_the_watch_set_timing(
+    mock_gen, mock_desc, mock_rename, mock_push, mock_get, mock_find, _sleep
+):
+    """A watch merge pushes the watch's own per-set durations, not the uniform
+    synthesized ones that caused #748."""
+    reset_circuit_breaker()
+    act = _make_garmin_activity()
+    act["manufacturer"] = "GARMIN"
+    mock_find.return_value = act
+    durations = [22.0, 31.0, 29.0, 35.0, 27.0]  # HEVY_WORKOUT has 5 active sets
+    mock_get.return_value = _watch_recording(durations)  # the backup read
+    mock_gen.return_value = "Push: 5 sets"
+
+    result = attempt_merge(MagicMock(), HEVY_WORKOUT, MagicMock(), watch_strategy="merge")
+
+    assert result.merged is True
+    pushed = mock_push.call_args[0][2]  # push_exercise_sets(client, activity_id, payload)
+    active = [s for s in pushed["exerciseSets"] if s["setType"] == "ACTIVE"]
+    assert [s["duration"] for s in active] == durations  # the watch's timing
+    # and the names still landed from Hevy
+    assert active[0]["exercises"][0]["category"] == "BENCH_PRESS"
+
+
+@patch("hevy2garmin.merge.time.sleep")
+@patch("hevy2garmin.merge.find_matching_garmin_activity")
+@patch("hevy2garmin.merge.get_activity_exercise_sets")
+@patch("hevy2garmin.merge.push_exercise_sets")
+@patch("hevy2garmin.merge.rename_activity")
+@patch("hevy2garmin.merge.set_description")
+@patch("hevy2garmin.merge.generate_description")
+def test_preserve_watch_timing_false_restores_synthesized_timing(
+    mock_gen, mock_desc, mock_rename, mock_push, mock_get, mock_find, _sleep
+):
+    """With the flag off, the old synthesized timing is used even on a watch."""
+    reset_circuit_breaker()
+    act = _make_garmin_activity()
+    act["manufacturer"] = "GARMIN"
+    mock_find.return_value = act
+    durations = [22.0, 31.0, 29.0, 35.0, 27.0]
+    mock_get.return_value = _watch_recording(durations)
+    mock_gen.return_value = "Push: 5 sets"
+
+    result = attempt_merge(
+        MagicMock(), HEVY_WORKOUT, MagicMock(), watch_strategy="merge", preserve_watch_timing=False
+    )
+
+    assert result.merged is True
+    pushed = mock_push.call_args[0][2]
+    active = [s for s in pushed["exerciseSets"] if s["setType"] == "ACTIVE"]
+    # Synthesized timing is uniform per set type, so it is NOT the watch's.
+    assert [s["duration"] for s in active] != durations
 
 
 # ---------------------------------------------------------------------------

@@ -386,6 +386,73 @@ def build_exercise_sets_payload(
     return {"activityId": activity_id, "exerciseSets": exercise_sets}
 
 
+def build_preserved_payload(synth_payload: dict, existing: dict) -> dict | None:
+    """Overlay Hevy's names, reps and weights onto the watch's own set timing.
+
+    The watch recorded a real timeline: each set's startTime, its duration, and
+    the rest between them. `build_exercise_sets_payload` throws that away and
+    invents a uniform duration for every set (the 33 seconds of #748). When the
+    workout was recorded on both the watch and Hevy, the watch's timing is the
+    accurate one, so this keeps the watch's whole set list unchanged and only
+    writes Hevy's exercise identity, reps and weight onto the ACTIVE sets.
+
+    The two set lists are matched by ACTIVE-set position, in order. That is safe
+    only when they have the same number of ACTIVE sets: the same workout logged
+    in both places. When the counts differ there is no sound mapping, so this
+    returns None and the caller keeps the synthesized timing rather than guess.
+
+    Args:
+        synth_payload: the output of `build_exercise_sets_payload`, which already
+            carries each ACTIVE set's resolved exercises, reps and weight.
+        existing: the activity's current sets, as `get_activity_exercise_sets`
+            returns them ({"exerciseSets": [...]}), i.e. the watch's recording.
+
+    Returns:
+        A payload that keeps the watch's startTime/duration on every set and
+        overlays Hevy's identity on the ACTIVE ones, or None when the ACTIVE-set
+        counts do not match.
+    """
+    existing_sets = (existing or {}).get("exerciseSets")
+    if not existing_sets:
+        return None
+
+    synth_active = [
+        s for s in synth_payload.get("exerciseSets", []) if s.get("setType") == "ACTIVE"
+    ]
+    watch_active = [s for s in existing_sets if s.get("setType") == "ACTIVE"]
+    if not watch_active or len(watch_active) != len(synth_active):
+        return None
+
+    out: list[dict] = []
+    ai = 0
+    for es in existing_sets:
+        if es.get("setType") == "ACTIVE":
+            h = synth_active[ai]
+            ai += 1
+            out.append(
+                {
+                    # Identity, reps and weight come from Hevy; the wktStepIndex too,
+                    # so sets group under the exercise they belong to rather than the
+                    # watch's own grouping of nameless sets.
+                    "exercises": h["exercises"],
+                    "repetitionCount": h.get("repetitionCount", 0),
+                    "weight": h.get("weight", 0.0),
+                    "wktStepIndex": h.get("wktStepIndex", 0),
+                    # Timing stays exactly as the watch recorded it (#748).
+                    "duration": es.get("duration"),
+                    "startTime": es.get("startTime"),
+                    "setType": "ACTIVE",
+                    "messageIndex": es.get("messageIndex"),
+                }
+            )
+        else:
+            # A REST (or any non-ACTIVE) set is the watch's own, kept untouched so
+            # its real rest duration survives. Copy it so the backup is not mutated.
+            out.append(dict(es))
+
+    return {"activityId": synth_payload.get("activityId"), "exerciseSets": out}
+
+
 def _apply_name_and_description(client, activity_id, hevy_workout) -> None:
     """Rename a Garmin activity to the Hevy title and set its exercise description."""
     title = hevy_workout.get("title", "Workout")
@@ -410,6 +477,7 @@ def attempt_merge(
     max_drift_minutes: int = 20,
     activity_types: set[str] | None = None,
     watch_strategy: str = "replace",
+    preserve_watch_timing: bool = True,
 ) -> MergeResult:
     """Try to merge Hevy exercise data into a matching Garmin activity.
 
@@ -492,6 +560,7 @@ def attempt_merge(
         )
 
     # Backup existing exercise sets
+    existing_sets: dict | None = None
     try:
         existing_sets = get_activity_exercise_sets(client, activity_id)
         database.set_app_config(
@@ -504,6 +573,25 @@ def attempt_merge(
 
     # Build payload
     payload = build_exercise_sets_payload(hevy_workout, activity_id, act_start, act_duration)
+
+    # Keep the watch's own per-set execution and rest timing when we can (#748).
+    # Only for a watch recording: a DEVELOPMENT activity's existing sets are a
+    # previous hevy2garmin upload, not real device timing worth preserving. The
+    # overlay maps set-for-set, so it falls back to the synthesized timing when
+    # the watch and Hevy disagree on how many sets there were.
+    if preserve_watch_timing and is_watch and existing_sets:
+        preserved = build_preserved_payload(payload, existing_sets)
+        if preserved is not None:
+            logger.info(
+                "  Keeping the watch's own set timing on activity %s (preserve_watch_timing)",
+                activity_id,
+            )
+            payload = preserved
+        else:
+            logger.info(
+                "  Watch and Hevy set counts differ on activity %s; using synthesized timing",
+                activity_id,
+            )
 
     # PUT exercise sets. The exerciseSets PUT is atomic: a single exercise whose
     # (category, subcategory) pair Garmin rejects 400s the WHOLE payload and would
