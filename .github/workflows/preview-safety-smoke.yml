@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - review/upstream-2026-10-22
+      - review/upstream-2026-11-01
     paths:
       - ".github/workflows/preview-safety-smoke.yml"
       - "web/app/api/cron/sync/route.ts"
