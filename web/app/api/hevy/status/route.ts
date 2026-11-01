@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { databaseNotAnswering } from "@/lib/db-down";
+import { ifNoTable } from "@/lib/missing-table";
 import { getDb } from "@/lib/db";
 import { loadGarminConnection, loadHevyConnection } from "@/lib/connections";
 
@@ -46,65 +48,66 @@ export async function GET() {
     return NextResponse.json(EMPTY);
   }
 
-  // Connection status from platform_credentials. See lib/connections.ts for which row means
-  // what; both helpers guard a missing table (fresh deploy that hasn't bootstrapped the schema).
-  // This used to test status === 'connected', a value nothing writes, so both flags were always
-  // false, and it read Garmin off the 'garmin' row a web login never creates (#495).
-  const [hevyConn, garminConn] = await Promise.all([
-    loadHevyConnection(sql),
-    loadGarminConnection(sql),
-  ]);
-  const hevyConnected = hevyConn.connected;
-  const garminConnected = garminConn.connected;
+  try {
+    // Connection status from platform_credentials. See lib/connections.ts for which row means
+    // what; both helpers guard a missing table (fresh deploy that hasn't bootstrapped the schema).
+    // This used to test status === 'connected', a value nothing writes, so both flags were always
+    // false, and it read Garmin off the 'garmin' row a web login never creates (#495).
+    const [hevyConn, garminConn] = await Promise.all([
+      loadHevyConnection(sql),
+      loadGarminConnection(sql),
+    ]);
+    const hevyConnected = hevyConn.connected;
+    const garminConnected = garminConn.connected;
 
-  // Aggregate counts over synced_workouts (success terminal state only).
-  const counts = await sql`
-    SELECT
-      count(*) FILTER (WHERE COALESCE(status, 'success') = 'success')::int AS total,
-      count(*) FILTER (
-        WHERE COALESCE(status, 'success') = 'success'
-          AND synced_at >= (now() - interval '7 days')
-      )::int AS week
-    FROM synced_workouts
-  `.catch(() => [] as Array<{ total: number; week: number }>);
+    // Aggregate counts over synced_workouts (success terminal state only).
+    const counts = await sql`
+      SELECT
+        count(*) FILTER (WHERE COALESCE(status, 'success') = 'success')::int AS total,
+        count(*) FILTER (
+          WHERE COALESCE(status, 'success') = 'success'
+            AND synced_at >= (now() - interval '7 days')
+        )::int AS week
+      FROM synced_workouts
+    `.catch(ifNoTable([] as Array<{ total: number; week: number }>));
 
-  const totalSynced = counts[0]?.total ?? 0;
-  const syncedThisWeek = counts[0]?.week ?? 0;
+    const totalSynced = counts[0]?.total ?? 0;
+    const syncedThisWeek = counts[0]?.week ?? 0;
 
-  const recentRows = await sql`
-    SELECT hevy_id, title, synced_at, calories, COALESCE(status, 'success') AS status
-    FROM synced_workouts
-    ORDER BY synced_at DESC
-    LIMIT 8
-  `.catch(
-    () =>
-      [] as Array<{
-        hevy_id: string;
-        title: string | null;
-        synced_at: string | null;
-        calories: number | null;
-        status: string;
-      }>,
-  );
+    const recentRows = await sql`
+      SELECT hevy_id, title, synced_at, calories, COALESCE(status, 'success') AS status
+      FROM synced_workouts
+      ORDER BY synced_at DESC
+      LIMIT 8
+    `.catch(ifNoTable([] as Array<{
+          hevy_id: string;
+          title: string | null;
+          synced_at: string | null;
+          calories: number | null;
+          status: string;
+        }>));
 
-  const recent: RecentWorkout[] = recentRows.map((r) => ({
-    hevy_id: r.hevy_id,
-    title: r.title ?? "",
-    synced_at: r.synced_at ?? null,
-    calories: Number(r.calories) || 0,
-    status: r.status,
-  }));
+    const recent: RecentWorkout[] = recentRows.map((r) => ({
+      hevy_id: r.hevy_id,
+      title: r.title ?? "",
+      synced_at: r.synced_at ?? null,
+      calories: Number(r.calories) || 0,
+      status: r.status,
+    }));
 
-  const body: StatusResponse = {
-    // If we have synced rows, Hevy has been talking to us even absent an explicit
-    // platform_credentials row.
-    hevyConnected: hevyConnected || totalSynced > 0,
-    // Any row with a garmin_activity_id proves the Garmin link worked.
-    garminConnected,
-    totalSynced,
-    syncedThisWeek,
-    recent,
-  };
+    const body: StatusResponse = {
+      // If we have synced rows, Hevy has been talking to us even absent an explicit
+      // platform_credentials row.
+      hevyConnected: hevyConnected || totalSynced > 0,
+      // Any row with a garmin_activity_id proves the Garmin link worked.
+      garminConnected,
+      totalSynced,
+      syncedThisWeek,
+      recent,
+    };
 
-  return NextResponse.json(body);
+    return NextResponse.json(body);
+  } catch (error) {
+    return databaseNotAnswering("hevy/status", error);
+  }
 }

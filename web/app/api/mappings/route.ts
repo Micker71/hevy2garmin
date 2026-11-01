@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { databaseNotAnswering } from "@/lib/db-down";
+import { ifNoTable } from "@/lib/missing-table";
 import { HEVY_TO_GARMIN } from "hevy2garmin";
 import { getDb } from "@/lib/db";
 import { categoryName } from "@/lib/garmin-categories";
@@ -61,34 +63,35 @@ export async function GET() {
     return NextResponse.json({ dbConfigured: false, custom: [], ...base } satisfies MappingsResponse);
   }
 
-  // `.catch` guards a missing custom_mappings table (fresh deploy that hasn't
-  // run the Python schema bootstrap yet).
-  const rows = await sql`
-    SELECT hevy_name, category, subcategory
-    FROM custom_mappings
-    ORDER BY hevy_name ASC
-  `.catch(
-    () =>
-      [] as Array<{
-        hevy_name: string;
-        category: number | string;
-        subcategory: number | string;
-      }>,
-  );
+  try {
+    // `.catch` guards a missing custom_mappings table (fresh deploy that hasn't
+    // run the Python schema bootstrap yet).
+    const rows = await sql`
+      SELECT hevy_name, category, subcategory
+      FROM custom_mappings
+      ORDER BY hevy_name ASC
+    `.catch(ifNoTable([] as Array<{
+          hevy_name: string;
+          category: number | string;
+          subcategory: number | string;
+        }>));
 
-  const custom: CustomMapping[] = rows.map((r) => ({
-    hevy_name: r.hevy_name,
-    category: Number(r.category),
-    subcategory: Number(r.subcategory),
-  }));
+    const custom: CustomMapping[] = rows.map((r) => ({
+      hevy_name: r.hevy_name,
+      category: Number(r.category),
+      subcategory: Number(r.subcategory),
+    }));
 
-  const body: MappingsResponse = {
-    dbConfigured: true,
-    customCount: custom.length,
-    builtinCount: base.builtinCount,
-    custom,
-    sample,
-  };
+    const body: MappingsResponse = {
+      dbConfigured: true,
+      customCount: custom.length,
+      builtinCount: base.builtinCount,
+      custom,
+      sample,
+    };
 
-  return NextResponse.json(body);
+    return NextResponse.json(body);
+  } catch (error) {
+    return databaseNotAnswering("mappings", error);
+  }
 }

@@ -1,4 +1,6 @@
 import { HEVY_TO_GARMIN } from "hevy2garmin";
+import { DatabaseDownPage } from "@/components/database-down";
+import { ifNoTable } from "@/lib/missing-table";
 import { getDb } from "@/lib/db";
 import {
   CATEGORY_OPTIONS,
@@ -18,6 +20,8 @@ interface CustomMapping {
 }
 
 interface MappingsData {
+  /** The database did not answer, as opposed to answering with nothing (#765). */
+  dbDown?: boolean;
   dbConfigured: boolean;
   custom: CustomMapping[];
   builtin: Array<{ name: string; category: number; subcategory: number }>;
@@ -38,25 +42,31 @@ async function loadMappings(): Promise<MappingsData> {
     return { dbConfigured: false, custom: [], builtin };
   }
 
-  const rows = await sql`
-    SELECT hevy_name, category, subcategory
-    FROM custom_mappings
-    ORDER BY hevy_name ASC
-  `.catch(() => [] as CustomMapping[]);
+  try {
+    const rows = await sql`
+      SELECT hevy_name, category, subcategory
+      FROM custom_mappings
+      ORDER BY hevy_name ASC
+    `.catch(ifNoTable([] as CustomMapping[]));
 
-  return {
-    dbConfigured: true,
-    custom: rows.map((r) => ({
-      hevy_name: r.hevy_name,
-      category: Number(r.category),
-      subcategory: Number(r.subcategory),
-    })),
-    builtin,
-  };
+    return {
+      dbConfigured: true,
+      custom: rows.map((r) => ({
+        hevy_name: r.hevy_name,
+        category: Number(r.category),
+        subcategory: Number(r.subcategory),
+      })),
+      builtin,
+    };
+  } catch (error) {
+    console.error("[loadMappings] the database did not answer:", (error as Error)?.message ?? error);
+    return { dbConfigured: true, dbDown: true, custom: [], builtin };
+  }
 }
 
 export default async function MappingsPage() {
   const data = await loadMappings();
+  if (data.dbDown) return <DatabaseDownPage title="Exercise mappings" />;
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-8 md:px-6">

@@ -1,4 +1,6 @@
 import { getDb } from "@/lib/db";
+import { DatabaseDownPage } from "@/components/database-down";
+import { ifNoTable } from "@/lib/missing-table";
 import { SettingsForm } from "@/components/settings-form";
 import { DangerZone } from "@/components/danger-zone";
 import { SessionsCard } from "@/components/sessions-card";
@@ -23,6 +25,8 @@ interface ConfigEntry {
 }
 
 interface SettingsData {
+  /** The database did not answer, as opposed to answering with nothing (#765). */
+  dbDown?: boolean;
   dbConfigured: boolean;
   platforms: PlatformRow[];
   config: ConfigEntry[];
@@ -42,43 +46,46 @@ async function loadSettings(): Promise<SettingsData> {
     return EMPTY;
   }
 
-  const [platforms, config, counts] = await Promise.all([
-    sql`
-      SELECT platform, auth_type, status, connected_at, expires_at
-      FROM platform_credentials
-      ORDER BY platform ASC
-    `.catch(() => [] as PlatformRow[]),
-    sql`
-      SELECT key, value, updated_at
-      FROM app_cache
-      WHERE key = ANY(${CONFIG_KEYS})
-      ORDER BY key ASC
-    `.catch(() => [] as ConfigEntry[]),
-    sql`SELECT count(*)::int AS n FROM synced_workouts`.catch(
-      () => [] as Array<{ n: number }>,
-    ),
-  ]);
+  try {
+    const [platforms, config, counts] = await Promise.all([
+      sql`
+        SELECT platform, auth_type, status, connected_at, expires_at
+        FROM platform_credentials
+        ORDER BY platform ASC
+      `.catch(ifNoTable([] as PlatformRow[])),
+      sql`
+        SELECT key, value, updated_at
+        FROM app_cache
+        WHERE key = ANY(${CONFIG_KEYS})
+        ORDER BY key ASC
+      `.catch(ifNoTable([] as ConfigEntry[])),
+      sql`SELECT count(*)::int AS n FROM synced_workouts`.catch(ifNoTable([] as Array<{ n: number }>)),
+    ]);
 
-  return {
-    dbConfigured: true,
-    syncedCount: Number(counts[0]?.n ?? 0),
-    platforms: platforms.map((p) => ({
-      platform: p.platform,
-      auth_type: p.auth_type ?? "",
-      status: p.status ?? "disconnected",
-      connected_at: p.connected_at ?? null,
-      expires_at: p.expires_at ?? null,
-    })),
-    config: config.map((c) => ({
-      key: c.key,
-      // The postgres driver returns JSONB as a parsed object already.
-      value:
-        c.value && typeof c.value === "object"
-          ? (c.value as Record<string, unknown>)
-          : {},
-      updated_at: c.updated_at ?? null,
-    })),
-  };
+    return {
+      dbConfigured: true,
+      syncedCount: Number(counts[0]?.n ?? 0),
+      platforms: platforms.map((p) => ({
+        platform: p.platform,
+        auth_type: p.auth_type ?? "",
+        status: p.status ?? "disconnected",
+        connected_at: p.connected_at ?? null,
+        expires_at: p.expires_at ?? null,
+      })),
+      config: config.map((c) => ({
+        key: c.key,
+        // The postgres driver returns JSONB as a parsed object already.
+        value:
+          c.value && typeof c.value === "object"
+            ? (c.value as Record<string, unknown>)
+            : {},
+        updated_at: c.updated_at ?? null,
+      })),
+    };
+  } catch (error) {
+    console.error("[loadSettings] the database did not answer:", (error as Error)?.message ?? error);
+    return { ...EMPTY, dbConfigured: true, dbDown: true };
+  }
 }
 
 function fmtDate(value: string | null): string {
@@ -124,6 +131,7 @@ function StatusPill({ status }: { status: string }) {
 
 export default async function SettingsPage() {
   const data = await loadSettings();
+  if (data.dbDown) return <DatabaseDownPage title="Settings" />;
   const cfg = (key: string): Record<string, unknown> =>
     data.config.find((c) => c.key === key)?.value ?? {};
   const autoSync = cfg("auto_sync");

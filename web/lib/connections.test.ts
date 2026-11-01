@@ -14,7 +14,14 @@ function fakeSql(rows: unknown[], sink?: string[]): Sql {
 
 function throwingSql(): Sql {
   return (async () => {
-    throw new Error("relation \"platform_credentials\" does not exist");
+    throw Object.assign(new Error("relation \"platform_credentials\" does not exist"), { code: "42P01" });
+  }) as unknown as Sql;
+}
+
+/** A database that does not answer at all, which must never read as "not connected" (#765). */
+function downSql(): Sql {
+  return (async () => {
+    throw Object.assign(new Error("Your account or project has exceeded the quota"), { code: "XX000" });
   }) as unknown as Sql;
 }
 
@@ -113,5 +120,12 @@ describe("loadHevyConnection", () => {
       const r = await loadHevyConnection(fakeSql([{ status: "active", connected_at: null, has_key: false }]));
       expect(r.connected).toBe(false);
     });
+  });
+});
+
+describe("a database that does not answer (#765)", () => {
+  it("is thrown rather than read as disconnected", async () => {
+    await expect(loadGarminConnection(downSql())).rejects.toThrow("exceeded the quota");
+    await expect(loadHevyConnection(downSql())).rejects.toThrow("exceeded the quota");
   });
 });
