@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { DatabaseDownPage } from "@/components/database-down";
+import { ifNoTable } from "@/lib/missing-table";
 import { getDb } from "@/lib/db";
 import { resyncedLabel } from "@/lib/resynced";
 
@@ -18,6 +20,8 @@ interface HistoryRow {
 }
 
 interface HistoryData {
+  /** The database did not answer, as opposed to answering with nothing (#765). */
+  dbDown?: boolean;
   dbConfigured: boolean;
   total: number;
   rows: HistoryRow[];
@@ -34,33 +38,36 @@ async function loadHistory(): Promise<HistoryData> {
     return EMPTY;
   }
 
-  const [counts, rows] = await Promise.all([
-    sql`SELECT count(*)::int AS total FROM synced_workouts`.catch(
-      () => [] as Array<{ total: number }>,
-    ),
-    sql`
-      SELECT hevy_id, title, synced_at, resynced_at, calories, avg_hr,
-             garmin_activity_id, COALESCE(status, 'success') AS status
-      FROM synced_workouts
-      ORDER BY synced_at DESC
-      LIMIT ${LIMIT}
-    `.catch(() => [] as HistoryRow[]),
-  ]);
+  try {
+    const [counts, rows] = await Promise.all([
+      sql`SELECT count(*)::int AS total FROM synced_workouts`.catch(ifNoTable([] as Array<{ total: number }>)),
+      sql`
+        SELECT hevy_id, title, synced_at, resynced_at, calories, avg_hr,
+               garmin_activity_id, COALESCE(status, 'success') AS status
+        FROM synced_workouts
+        ORDER BY synced_at DESC
+        LIMIT ${LIMIT}
+      `.catch(ifNoTable([] as HistoryRow[])),
+    ]);
 
-  return {
-    dbConfigured: true,
-    total: counts[0]?.total ?? 0,
-    rows: rows.map((r) => ({
-      hevy_id: r.hevy_id,
-      title: r.title ?? "",
-      synced_at: r.synced_at ?? null,
-      resynced_at: r.resynced_at ?? null,
-      calories: r.calories != null ? Number(r.calories) : null,
-      avg_hr: r.avg_hr != null ? Number(r.avg_hr) : null,
-      garmin_activity_id: r.garmin_activity_id ?? null,
-      status: r.status,
-    })),
-  };
+    return {
+      dbConfigured: true,
+      total: counts[0]?.total ?? 0,
+      rows: rows.map((r) => ({
+        hevy_id: r.hevy_id,
+        title: r.title ?? "",
+        synced_at: r.synced_at ?? null,
+        resynced_at: r.resynced_at ?? null,
+        calories: r.calories != null ? Number(r.calories) : null,
+        avg_hr: r.avg_hr != null ? Number(r.avg_hr) : null,
+        garmin_activity_id: r.garmin_activity_id ?? null,
+        status: r.status,
+      })),
+    };
+  } catch (error) {
+    console.error("[loadHistory] the database did not answer:", (error as Error)?.message ?? error);
+    return { ...EMPTY, dbConfigured: true, dbDown: true };
+  }
 }
 
 function fmtDate(value: string | null): string {
@@ -118,6 +125,7 @@ function StatusPill({ status }: { status: string }) {
 
 export default async function HistoryPage() {
   const data = await loadHistory();
+  if (data.dbDown) return <DatabaseDownPage title="Sync history" />;
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-8 md:px-6">

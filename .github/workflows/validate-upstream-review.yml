@@ -3,7 +3,7 @@ name: Validate upstream upgrade (isolated)
 on:
   push:
     branches:
-      - review/upstream-2026-10-22
+      - review/upstream-2026-11-01
   workflow_dispatch:
 
 permissions:
@@ -20,15 +20,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Merge upstream in runner only
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.email "ci@example.invalid"
-          git config user.name "CI Review"
-          git fetch --no-tags https://github.com/drkostas/hevy2garmin.git main
-          git merge --no-commit --no-ff FETCH_HEAD
-          echo "Upstream merged in temporary CI workspace only; no commits pushed."
+      - name: Confirm integrated upstream commit
+        run: git merge-base --is-ancestor aff2865bf8079b03051a235b3fe4eb09fd49b4aa HEAD
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
