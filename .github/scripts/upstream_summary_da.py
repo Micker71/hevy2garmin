@@ -1,8 +1,9 @@
-#!/usr/bin/env python3
 """Summarize upstream git log for a Danish GitHub issue (heuristic categories)."""
+
 import json
 import subprocess
 import sys
+
 
 def git(*args):
     return subprocess.check_output(["git", *args], text=True).strip()
@@ -29,8 +30,7 @@ with open("/tmp/upstream-update-issue.md", "w", encoding="utf-8") as f:
     f.write("# Hevy2Garmin – opdateringer fra originalprojektet\n\n")
     f.write(f"**{len(data)} nye commits** i originalprojektet, som endnu ikke findes i din fork.\n\n")
     f.write("## Overblik (automatisk klassificering)\n\n")
-    for title, entries in groups.items():
-        f.write(f"- **{title}: {len(entries)}**\n")
+    f.writelines(f"- **{title}: {len(entries)}**\n" for title, entries in groups.items())
     f.write("\n> Kategorierne bygger kun på commit-beskeder og er vejledende. Gennemgå ændringerne før en opdatering.\n")
     f.write("\n## Ændringer\n\n")
     for title, entries in groups.items():
